@@ -1,0 +1,76 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net/http"
+
+	"golang.org/x/sync/errgroup"
+)
+
+func main() {
+	g, ctx := errgroup.WithContext(context.Background())
+	port1 := 8081
+	// port2 := 8082
+	stop := make(chan string, 1)
+
+	g.Go(func() error {
+		err := serveAt(ctx, port1, stop)
+		return err
+	})
+
+	// g.Go(func() error {
+	// 	err := serveAt(ctx, port2, stop)
+	// 	return err
+	// })
+
+	// g.Go(func() error {
+	// 	time.Sleep(time.Second * 10)
+	// 	cancel()
+	// 	return errors.New("xxxxxxxxx")
+	// })
+
+	if err := g.Wait(); err != nil {
+		//stop <- err.Error()
+		fmt.Println("Error occured:", err)
+	}
+	fmt.Println("end main")
+}
+
+func serve(ctx context.Context, addr string, handler http.Handler, stop <-chan string, errch <-chan error) error {
+	s := http.Server{
+		Addr:    addr,
+		Handler: handler,
+	}
+
+	go func() {
+		select {
+		case msg := <-stop:
+			fmt.Println("Shutting down due to:", msg)
+			s.Shutdown(ctx)
+		case err := <-errch:
+			fmt.Println("Close due to:", err.Error())
+			s.Close()
+			// ctx.Done()
+		}
+	}()
+	err := s.ListenAndServe()
+	return err
+}
+func serveAt(ctx context.Context, port int, stop <-chan string) error {
+	helloMsg := fmt.Sprintf("Hello World @%d!", port)
+	serveAddr := fmt.Sprintf("127.0.0.1:%d", port)
+	errMsg := fmt.Sprintf("Dummy error @%d!", port)
+
+	errch := make(chan error)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/hello", func(resp http.ResponseWriter, req *http.Request) {
+		resp.Write([]byte(helloMsg))
+	})
+	mux.HandleFunc("/error", func(resp http.ResponseWriter, req *http.Request) {
+		errch <- errors.New(errMsg)
+	})
+	return serve(ctx, serveAddr, mux, stop, errch)
+}

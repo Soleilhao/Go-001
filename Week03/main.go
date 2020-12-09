@@ -4,51 +4,76 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
 
 	"golang.org/x/sync/errgroup"
 )
 
 func main() {
 	g, ctx := errgroup.WithContext(context.Background())
-	portBegin, portEnd := 8081, 8083
-	stop := make(chan string, portEnd-portBegin)
+	port1 := 8081
+	port2 := 8085
 
-	x := func(port int) {
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+	dummyError := make(chan error)
+
+	g.Go(func() error {
+		select {
+		case <-sigs:
+			dummyError <- fmt.Errorf("exit signal")
+		}
+		return nil
+	})
+
+	for i := port1; i <= port2; i++ {
+		i := i
 		g.Go(func() error {
-			return serveAt(ctx, port, stop)
+			err := serveAt(ctx, i, dummyError)
+			return err
 		})
 	}
-	for i := portBegin; i <= portEnd; i++ {
-		x(i)
-	}
+
+	// g.Go(func() error {
+	// 	err := serveAt(ctx, port2)
+	// 	return err
+	// })
 
 	if err := g.Wait(); err != nil {
-		stop <- err.Error()
 		fmt.Println("Error occured:", err)
 	}
+	fmt.Println("end main")
 }
 
-func serve(ctx context.Context, addr string, handler http.Handler, stop <-chan string) error {
+func serve(ctx context.Context, addr string, handler http.Handler, errOccured chan error) error {
 	s := http.Server{
 		Addr:    addr,
 		Handler: handler,
 	}
 
 	go func() {
-		msg := <-stop
-		fmt.Println("Shutting down due to:", msg)
-		s.Shutdown(ctx)
+		select {
+		case <-ctx.Done():
+			fmt.Println("shutting down " + addr)
+			s.Shutdown(ctx)
+		case err := <-errOccured:
+			fmt.Println("error occured at " + addr + ": " + err.Error())
+			s.Shutdown(ctx)
+		}
 	}()
-	return s.ListenAndServe()
+	fmt.Println("Start listening on " + addr)
+	err := s.ListenAndServe()
+	return err
 }
-
-func serveAt(ctx context.Context, port int, stop <-chan string) error {
+func serveAt(ctx context.Context, port int, errOccured chan error) error {
 	helloMsg := fmt.Sprintf("Hello World @%d!", port)
 	serveAddr := fmt.Sprintf("127.0.0.1:%d", port)
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/", func(resp http.ResponseWriter, req *http.Request) {
+	mux.HandleFunc("/hello", func(resp http.ResponseWriter, req *http.Request) {
 		resp.Write([]byte(helloMsg))
 	})
-	return serve(ctx, serveAddr, mux, stop)
+	return serve(ctx, serveAddr, mux, errOccured)
 }
